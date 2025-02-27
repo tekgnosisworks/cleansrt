@@ -19,6 +19,6 @@ When using with a folder, it first scans for all SRT files. Once the list is cre
 
 ## Free
 
-I am starting my IT company backup. I am trying to raise some funds. If you like the software, please contribute.
+I am starting my IT company. I am trying to raise some funds. If you like the software, please contribute.
 Zelle bmoore@tekgnosis.works
 venmo @tekgnosis
