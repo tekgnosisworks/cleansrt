@@ -1,10 +1,12 @@
 use std::{ffi::OsString, path::PathBuf, fs};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use srtlib::{Subtitle, Subtitles};
 use clap::{value_parser, Arg, ArgGroup, Command};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use log::{error, info};
 use env_logger::{Builder, Target};
+use chrono;
 
 fn main() {
     if let Err(e) =setup_logger(){
@@ -63,7 +65,7 @@ fn main() {
         .get_matches();
 
     let input_path: &PathBuf = matches.get_one("input").unwrap();
-    info!("Start at {}", input_path.to_str().unwrap());
+    info!("Starting at {}", input_path.to_str().unwrap());
     let mut texts: Vec<String> = Vec::new();
     let delete_old = matches.get_flag("delete");
     if matches.contains_id("text") {
@@ -136,32 +138,63 @@ fn process_srt_file(input_file: &PathBuf, output_file: &PathBuf, texts: &[String
 }
 
 fn process_directory(input_dir: &PathBuf, base_output_dir: &PathBuf, texts: &[String], delete: bool) {
-    let mut srt_files = Vec::new();
-    find_srt_files(input_dir, &mut srt_files);
+    let srt_files = find_srt_files(input_dir);
     info!("Found {} .srt files to process", srt_files.len());
-    //todo add in percentage calculator
+    
+    let pb = ProgressBar::new(srt_files.len() as u64);
+    pb.set_style(ProgressStyle::default_bar()
+        .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {percent:>3}% {msg}")
+        .unwrap());
+    
     for file_path in srt_files {
+        pb.set_message(format!("Processing: {}", file_path.file_name().unwrap_or_default().to_string_lossy()));
         let rel_path = file_path.strip_prefix(input_dir).unwrap_or(&file_path);
-        let mut output_path = base_output_dir.join(rel_path);
-        let mut filename: OsString = output_path.file_stem().unwrap().to_os_string();
+        let mut old_path = base_output_dir.join(rel_path);
+        let mut filename: OsString = old_path.file_stem().unwrap().to_os_string();
         filename.push(".OLD.");
-        filename.push(output_path.extension().unwrap().to_str().unwrap());
-        output_path.set_file_name(filename);
+        filename.push(old_path.extension().unwrap().to_str().unwrap());
+        old_path.set_file_name(filename);
 
-        let _ = fs::rename(&file_path, &output_path);
-        process_srt_file(&output_path, &file_path, texts);
-        if delete {
-            let _ = fs::remove_file(&output_path);
+        if let Err(e) = fs::rename(&file_path, &old_path) {
+            error!("Failed to rename {:?} to {:?}: {}", file_path, old_path, e);
+            continue;
         }
+        process_srt_file(&old_path, &file_path, texts);
+        if delete {
+            let _ = fs::remove_file(&old_path);
+        }
+        pb.inc(1);
     }
+    pb.finish_with_message("Complete!");
+    pb.finish_and_clear();
 }
 
-fn find_srt_files(dir: &PathBuf, srt_files: &mut Vec<PathBuf>) {
+fn find_srt_files(dir: &PathBuf) -> Vec<PathBuf> {
+    let mut srt_files: Vec<PathBuf> = Vec::new();
+    
+    // Create ONE progress bar for the entire scanning operation
+    let pb = ProgressBar::new_spinner();
+    let spinner_style = ProgressStyle::with_template("{spinner:.green} {wide_msg}")
+        .unwrap()
+        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
+    pb.set_style(spinner_style);
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+    
+    find_srt_files_recursive(dir, &mut srt_files, &pb);
+    
+    pb.finish_and_clear();
+    srt_files
+}
+
+fn find_srt_files_recursive(dir: &PathBuf, srt_files: &mut Vec<PathBuf>, pb: &ProgressBar) {
     if let Ok(entries) = fs::read_dir(dir) {
+        let dir_name = dir.file_name().unwrap_or_default().to_string_lossy();
+        pb.set_message(format!("Scanning: {}", dir_name));
+        
         for entry in entries.filter_map(Result::ok) {
             let path = entry.path();
             if path.is_dir() {
-                find_srt_files(&path, srt_files);
+                find_srt_files_recursive(&path, srt_files, pb); // Pass same progress bar
             } else if path.is_file() {
                 if let Some(extension) = path.extension() {
                     if extension.to_string_lossy().to_lowercase() == "srt" {
@@ -213,7 +246,7 @@ fn setup_logger() -> Result<(), io::Error> {
 
     let multi_writer = MultiWriter::new(vec![
         Box::new(file),
-        Box::new(io::stderr()),
+        //Box::new(io::stderr()),
     ]);
 
     let mut builder = Builder::from_default_env();
